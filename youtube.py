@@ -1,9 +1,10 @@
 import googleapiclient.discovery
-import streamlit as st
 import mysql.connector as mysql
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
+import streamlit as st
+from streamlit_option_menu import option_menu
 
 
 def api_connect(apikey):
@@ -16,7 +17,7 @@ def api_connect(apikey):
 
 
 # API key to connect to the YouTube API
-api_key = 'AIzaSyD2onBKce9PI8_Y3jo0Szm5PRNVjZc_lqA'
+api_key = 'AIzaSyBH0pDsdMwZW87rudyTL9QmIwUxR_7Xi0Y'
 # To establish the connection to the API
 youtube = api_connect(api_key)
 
@@ -48,7 +49,7 @@ def create_tables(cursor):
             tags TEXT,
             thumbnail TEXT,
             description TEXT,
-            published_date DATETIME,
+            published_date TIMESTAMP,
             duration TIME,
             views BIGINT,
             likes INT,
@@ -63,7 +64,7 @@ def create_tables(cursor):
             video_id VARCHAR(255),
             comment_text TEXT,
             author VARCHAR(255),
-            published_date DATETIME
+            published_date TIMESTAMP
         )
     """)
 
@@ -72,7 +73,7 @@ def create_tables(cursor):
             playlist_id VARCHAR(255),
             title VARCHAR(255),
             channel_id VARCHAR(255),
-            published_date DATETIME,
+            published_date TIMESTAMP,
             video_count INT
         )
     """)
@@ -83,7 +84,6 @@ def api_data_receive(youtube_api, channel_id, part='snippet'):
         channel_response = youtube_api.channels().list(id=channel_id, part=part).execute()
         return channel_response['items'][0]
     except Exception as e:
-        st.error(f"Error retrieving channel data: {e}")
         return None
 
 
@@ -114,32 +114,49 @@ def channel_data(channel_id):
                     'Playlist_Id': item['contentDetails']['relatedPlaylists']['uploads']
                 }
                 detail_list.append(details)
-                cursor.execute("SELECT count(*) FROM channel_info WHERE channel_id = %s", (details['Channel_Id'],))
+                cursor.execute("SELECT COUNT(*) FROM channel_info WHERE channel_id = %s", (details['Channel_Id'],))
                 count = cursor.fetchone()[0]
                 if count == 0:
                     cursor.execute(
                         "INSERT INTO channel_info (channel_name, channel_id, subscribe, views, total_videos, channel_description, playlist_id) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                         (details['Channel_Name'], details['Channel_Id'], details['Subscribers'], details['Views'],
-                         details['Total_Videos'], details['Channel_Description'], details['Playlist_Id']))
-
+                         details['Total_Videos'], details['Channel_Description'], details['Playlist_Id'])
+                    )
+                    conn.commit()
+                    st.write('Channel Name :',details['Channel_Name'])
                 else:
-                    cursor.execute("UPDATE channel_info SET channel_name = %s, subscribe = %s, views = %s, total_videos = %s, channel_description = %s, playlist_id = %s WHERE channel_id = %s ",
-                                   (details['Channel_Name'], details['Subscribers'],details['Views'],details['Total_Videos'],
-                                    details['Channel_Description'], details['Playlist_Id'],details['Channel_Id']))
-                    st.write('Channel already exists and values are fetched and updated')
-            conn.commit()
+                    st.write('Channel already exists')
+
             return detail_list
         except Exception as e:
-            st.error(f"Error fetching channel data: {e}")
             return []
 
 
-def parse_duration(duration_str):
-    try:
-        duration_seconds = int(duration_str[2:-1])
-        return duration_seconds
-    except ValueError:
-        return None
+def parse_duration(duration_data):
+
+    duration = duration_data[2:]
+
+    hours = 0
+    minutes = 0
+    seconds = 0
+
+    # Find the hours part
+    if 'H' in duration:
+        hours_part, duration = duration.split('H')
+        hours = int(hours_part)
+
+    # Find the minutes part
+    if 'M' in duration:
+        minutes_part, duration = duration.split('M')
+        minutes = int(minutes_part)
+
+    # Find the seconds part
+    if 'S' in duration:
+        seconds_part = duration.split('S')[0]
+        seconds = int(seconds_part)
+
+    return hours, minutes, seconds
+
 
 
 def get_video_details(video_ids):
@@ -154,8 +171,8 @@ def get_video_details(video_ids):
                     part="snippet,contentDetails,statistics",
                     id=video_id
                 )
-
                 response = request.execute()
+
                 for item in response['items']:
                     data = {
                         'channel_Name': item['snippet']['channelTitle'],
@@ -176,30 +193,33 @@ def get_video_details(video_ids):
                     video_list.append(data)
 
                     duration_seconds = parse_duration(data['Duration'])
-                    duration = timedelta(seconds=duration_seconds) if duration_seconds is not None else timedelta(
-                        seconds=0)
-                    current_datetime = datetime.now()
-                    sql_duration = (current_datetime + duration).strftime('%Y-%m-%d %H:%M:%S')
-
+                    hours, minutes, seconds = duration_seconds
+                    duration = f'{hours:02}:{minutes:02}:{seconds:02}'
                     parsed_datetime = datetime.fromisoformat(data['Publish_Date'].replace('Z', '+00:00'))
                     mysql_published_date = parsed_datetime.strftime('%Y-%m-%d %H:%M:%S')
-                    cursor.execute("SELECT count(*) FROM video_details WHERE video_id=%s ",(data['Video_Id'],))
+                    cursor.execute("select count(*) from video_details where video_id=%s",(data['Video_Id'],))
                     count = cursor.fetchone()[0]
+                    print(count)
                     if count == 0:
                         cursor.execute(
                             "INSERT INTO video_details (channel_name, channel_id, video_id, title, tags, thumbnail, description, published_date, duration, views, likes, dislikes, comments) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                             (data['channel_Name'], data['Channel_Id'], data['Video_Id'], data['Title'], data['Tags'],
-                             data['Thumbnail'],data['Description'], mysql_published_date, sql_duration, data['Views'], data['Likes'],
-                             data['Dislikes'],data['Comments']))
+                             data['Thumbnail'],
+                             data['Description'], mysql_published_date, duration, data['Views'], data['Likes'],
+                             data['Dislikes'],
+                             data['Comments'])
+                        )
                     else:
-                        cursor.execute("UPDATE video_details set channel_name = %s, channel_id = %s, title = %s, tags = %s, thumbnail = %s, description = %s, published_date = %s, duration = %s, views = %s, likes = %s, dislikes = %s, comments = %s WHERE video_id = %s",
+                        cursor.execute("""
+                            UPDATE video_details SET channel_name = %s,channel_id = %s, title = %s,tags = %s, thumbnail = %s, description = %s,
+                            published_date = %s, duration = %s, views = %s, likes = %s, dislikes = %s,comments = %s WHERE video_id = %s""",
                                        (data['channel_Name'], data['Channel_Id'], data['Title'], data['Tags'],
-                                                data['Thumbnail'],data['Description'], mysql_published_date, sql_duration, data['Views'], data['Likes'],
-                                                data['Dislikes'],data['Comments'],data['Video_Id']))
+                                        data['Thumbnail'], data['Description'], mysql_published_date, duration, data['Views'],
+                                        data['Likes'], data['Dislikes'],data['Comments'], data['Video_Id']))
+
                 conn.commit()
             except Exception as e:
-                st.error(f"Error fetching video details for video ID {video_id}: {e}")
-
+                pass
     return video_list
 
 
@@ -230,8 +250,7 @@ def get_video_data(video_id):
             if next_page_token is None:
                 break
     except Exception as e:
-        st.error(f"Error fetching video data: {e}")
-
+        pass
     return video_ids
 
 
@@ -263,19 +282,17 @@ def get_comment_details(video_ids):
 
                     parsed_datetime = datetime.fromisoformat(comment_details['Published_Date'].replace('Z', '+00:00'))
                     mysql_published_date = parsed_datetime.strftime('%Y-%m-%d %H:%M:%S')
-                    cursor.execute("SELECT count(*) FROM comment_details WHERE comment_id=%s",(comment_details['Comment_ID'],))
-                    count = cursor.fetchone()[0]
-                    if count == 0:
-                        cursor.execute("INSERT INTO comment_details (comment_id, video_id, comment_text, author, published_date) VALUES (%s, %s, %s, %s, %s)",
+
+                    cursor.execute(
+                        "INSERT INTO comment_details (comment_id, video_id, comment_text, author, published_date) VALUES (%s, %s, %s, %s, %s)",
                         (comment_details['Comment_ID'], comment_details['Video_Id'], comment_details['Comment_Text'],
-                         comment_details['Author_Name'], mysql_published_date))
-                    else:
-                        cursor.execute("UPDATE comment_details SET video_id = %s, comment_text = %s, author = %s, published_date = %s WHERE comment_id = % s",
-                                        comment_details['Video_Id'], comment_details['Comment_Text'],
-                                        comment_details['Author_Name'], mysql_published_date, comment_details['Comment_ID'] )
+                         comment_details['Author_Name'],
+                         mysql_published_date)
+                    )
+
                 conn.commit()
             except Exception as e:
-                st.error(f"Error fetching comments for video ID {video_id}: {e}")
+                pass
 
     return comment_list
 
@@ -314,24 +331,19 @@ def get_playlist_details(channel_id):
 
                     parsed_datetime = datetime.fromisoformat(playlist_item['Published_Date'].replace('Z', '+00:00'))
                     mysql_published_date = parsed_datetime.strftime('%Y-%m-%d %H:%M:%S')
-                    cursor.execute("SELECT count(*) from playlist_details WHERE playlist_id = %s",(playlist_item['Playlist_Id'],))
-                    count = cursor.fetchone()[0]
-                    if count == 0:
-                        cursor.execute(
-                            "INSERT INTO playlist_details (playlist_id, title, channel_id, published_date, video_count) VALUES (%s, %s, %s, %s, %s)",
-                            (playlist_item['Playlist_Id'], playlist_item['Title'], playlist_item['Channel_Id'],
-                             mysql_published_date, playlist_item['Video_Count']))
-                    else:
-                        cursor.execute("UPDATE playlist_details SET title = %s, channel_id = %s, published_date = %s, video_count = %s WHERE playlist_id = %s",
-                                       (playlist_item['Title'], playlist_item['Channel_Id'],mysql_published_date,
-                                        playlist_item['Video_Count'],playlist_item['Playlist_Id']))
+
+                    cursor.execute(
+                        "INSERT INTO playlist_details (playlist_id, title, channel_id, published_date, video_count) VALUES (%s, %s, %s, %s, %s)",
+                        (playlist_item['Playlist_Id'], playlist_item['Title'], playlist_item['Channel_Id'],
+                         mysql_published_date, playlist_item['Video_Count'])
+                    )
+
                 conn.commit()
                 next_page_token = response.get('nextPageToken')
                 if next_page_token is None:
                     break
             except Exception as e:
-                st.error(f"Error fetching playlist data: {e}")
-                break
+                pass
 
     return playlist_datas
 
@@ -358,30 +370,34 @@ def fetch_all_data(channel_id):
         "video_data": video_detail_df
     }
 
-
 def main():
+    st.set_page_config(layout="wide", initial_sidebar_state="expanded")
 
-    st.sidebar.header(':red[MENU]')
-    option = st.sidebar.radio(":black[Select option]", ['Data Collection', 'Data Analysis'])
     with st.sidebar:
-        st.write('-----')
-    if option == "Data Collection":
-        st.header("Data Collection",divider='red')
-        st.markdown('''
-                - Enter channel ID in the input field.
-                - Clicking the 'Get Channel Details' button will display an overview of youtube channel.
-                ''')
-        st.markdown('''
-                :red[note:] ***you can get the channel ID :***
-                open youtube - go to any channel - go to about - share channel - copy the channel ID''')
-        st.write("-----")
-        channel_id = st.text_input("Enter Channel ID")
+        selected = option_menu("NAVIGATION", ['Home', 'Data Collection', 'Data Analysis'],
+                               icons=['house-fill', 'collection-fill', 'clipboard-data-fill'], menu_icon="cast",
+                               default_index=1)
+
+    if selected == "Home":
+        st.header("Youtube Data Harvesting and Warehousing")
+        st.divider()
+        st.write("This Application used to extract the youtube channel informtion from it's channel ID Using youtube api and store in mysql sql and view the outputs in streamlit")
+        st.divider()
+        st.write("Data Collection")
+        st.write("Enter the Channel ID in Data Collection Menu")
+        st.divider()
+        st.write("Data Analysis")
+        st.write("Perform Data Analysis in Data Analysis Menu for the Collection Youtube Records")
+
+    elif selected == "Data Collection":
+
+        channel_id = st.text_input(" ",label_visibility="hidden", placeholder='Enter the Channel ID', )
 
         if st.button("Get Channel Details"):
+            st.write("All data's are fetched and stored successfully")
             fetch_all_data(channel_id)
-            st.write("Channel data's are fetched and stored successfully")
 
-    elif option == "Data Analysis":
+    elif selected == "Data Analysis":
         st.header("Data Analysis", divider='red')
 
         questions = [
@@ -397,85 +413,97 @@ def main():
             "10. Which videos have the highest number of comments, and what are their corresponding channel names?"
         ]
 
-        selected_questions = st.multiselect("Select questions to execute", questions)
-        if st.button("Run Selected Queries"):
-
-            for selected_question in selected_questions:
-                with get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    if selected_question == questions[0]:
-                        cursor.execute("SELECT channel_name,title FROM video_details")
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Channel Name', 'Title'])
-                        st.write(df)
+        selected_question = st.selectbox("Select questions to execute", questions)
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            if selected_question == questions[0]:
+                cursor.execute("SELECT channel_name,title FROM video_details order by channel_name")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel Name', 'Title'])
+                df.index = df.index + 1
+                st.write(df)
 
 
-                    elif selected_question == questions[1]:
-                        cursor.execute(
-                            "SELECT channel_name, COUNT(*) as video_count FROM video_details GROUP BY channel_name ORDER BY video_count DESC")
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Channel Name', 'Counts'])
-                        st.write(df)
+            elif selected_question == questions[1]:
+                cursor.execute(
+                    "SELECT channel_name, COUNT(*) as video_count FROM video_details GROUP BY channel_name ORDER BY video_count DESC")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel Name', 'Counts'])
+                df.index = df.index + 1
+                st.write(df)
+                st.bar_chart(df.set_index('Channel Name'), color=["#FF0000"])
+
+            elif selected_question == questions[2]:
+                cursor.execute("SELECT channel_name,title,views FROM video_details ORDER BY views DESC LIMIT 10")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel Name', 'Title', 'Views'])
+                df.index = df.index + 1
+                st.write(df)
+
+            elif selected_question == questions[3]:
+                cursor.execute("SELECT channel_name,title,comments FROM video_details order by comments desc limit 100")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel Name', 'Title', 'Comments'])
+                df.index = df.index + 1
+                st.write(df)
+
+            elif selected_question == questions[4]:
+                cursor.execute(
+                    "SELECT channel_name,MAX(likes) as max_likes FROM video_details GROUP BY channel_name order by max(likes) desc")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel_Name', 'Likes'])
+                df.index = df.index + 1
+                st.write(df)
+                st.bar_chart(df.set_index('Channel_Name'), color=["#FF0000"])
 
 
-                    elif selected_question == questions[2]:
-                        cursor.execute("SELECT channel_name,title,views FROM video_details ORDER BY views DESC LIMIT 10")
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Channel Name', 'Title', 'Views'])
-                        st.write(df)
+            elif selected_question == questions[5]:
+                cursor.execute(
+                    "SELECT channel_name,title, SUM(likes) as total_likes, SUM(dislikes) as total_dislikes FROM video_details GROUP BY channel_name,title order by sum(likes) desc limit 100")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel Name', 'Title', 'Likes', 'Dislikes'])
+                df.index = df.index + 1
+                st.write(df)
 
-                    elif selected_question == questions[3]:
-                        cursor.execute("SELECT title,comments FROM video_details")
-                        data = cursor.fetchall()
-                        df = df = pd.DataFrame(data, columns=['Title', 'Comments'])
-                        st.write(df)
 
-                    elif selected_question == questions[4]:
-                        cursor.execute(
-                            "SELECT channel_name,MAX(likes) as max_likes FROM video_details GROUP BY channel_name")
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Channel_Name', 'Likes'])
-                        st.write(df)
+            elif selected_question == questions[6]:
+                cursor.execute(
+                    "SELECT channel_name, SUM(views) as total_views FROM video_details GROUP BY channel_name order by sum(views) desc")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel_Name', 'Views'])
+                df.index = df.index + 1
+                st.write(df)
+                st.bar_chart(df.set_index('Channel_Name'), color=["#FF0000"])
 
-                    elif selected_question == questions[5]:
-                        cursor.execute(
-                            "SELECT title, SUM(likes) as total_likes, SUM(dislikes) as total_dislikes FROM video_details GROUP BY title")
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Title', 'Likes', 'Dislikes'])
-                        st.write(df)
+            elif selected_question == questions[7]:
+                cursor.execute("SELECT DISTINCT channel_name FROM video_details WHERE YEAR(published_date) = 2022;")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel_Name'])
+                st.write("Channels Published Video in Year 2022")
+                df.index = df.index + 1
+                st.write(df)
 
-                    elif selected_question == questions[6]:
-                        cursor.execute(
-                            "SELECT channel_name, SUM(views) as total_views FROM video_details GROUP BY channel_name")
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Channel_Name', 'Views'])
-                        st.write(df)
+            elif selected_question == questions[8]:
+                cursor.execute(
+                    "SELECT channel_name, avg(time_to_sec(duration)) AS avg_duration FROM video_details group by channel_name")
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Channel_Name', 'Avg_Duration in Seconds'])
+                df.index = df.index + 1
+                st.write(df)
 
-                    elif selected_question == questions[7]:
-                        cursor.execute("SELECT DISTINCT channel_name FROM video_details WHERE YEAR(published_date) = 2022;")
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Channel_Name'])
-                        st.write(df)
-
-                    elif selected_question == questions[8]:
-                        cursor.execute(
-                            "SELECT channel_name, AVG(duration) AS avg_duration FROM video_details GROUP BY channel_name ")
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Channel_Name', 'Avg_Duration'])
-                        st.write(df)
-
-                    elif selected_question == questions[9]:
-                        cursor.execute("""SELECT title, channel_name, SUM(comments) as comments
-                                FROM video_details 
-                                GROUP BY title, channel_name 
-                                ORDER BY comments DESC 
-                                LIMIT 1
-                            """)
-                        data = cursor.fetchall()
-                        df = pd.DataFrame(data, columns=['Title', 'Channel_Name', 'Comments'])
-                        st.write(df)
+            elif selected_question == questions[9]:
+                cursor.execute("""SELECT concat(channel_name,'-',title) as title, SUM(comments) as comments
+                        FROM video_details 
+                        GROUP BY title, channel_name 
+                        ORDER BY comments DESC 
+                    """)
+                data = cursor.fetchall()
+                df = pd.DataFrame(data, columns=['Title', 'Comments'])
+                df.index = df.index + 1
+                st.write(df)
     else:
         pass
+
 
 if __name__ == "__main__":
     main()
